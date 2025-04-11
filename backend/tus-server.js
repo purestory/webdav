@@ -1,11 +1,12 @@
-const { TusServer, FileStore, EVENTS } = require('@tus/server');
+const tus = require('@tus/server'); // @tus/server 모듈 전체를 가져옴
+const TusServer = tus.Server;      // .Server 속성으로 클래스에 접근
+const EVENTS = tus.EVENTS;           // EVENTS는 그대로 가져옴
+const { FileStore } = require('@tus/file-store');
 const path = require('path');
-const fs = require('fs').promises; // Use promises for async operations
+const fs = require('fs').promises;
 
 // Import necessary functions from server.js
-// Note: server.js needs to properly export these
 const { log, errorLog, sanitizeFilename, updateDiskUsage } = require('./server');
-// If server.js doesn't export them yet, this will fail until it does.
 
 // --- Configuration ---
 const tusStorageDir = path.join(__dirname, 'tus-storage'); // Directory for temporary TUS uploads
@@ -25,14 +26,23 @@ async function ensureTusStorageDir() {
     }
 }
 
-// --- TUS Server Initialization ---
+// Use the TusServer variable obtained above
 const tusServer = new TusServer({
     path: tusApiPath,
     datastore: new FileStore({
         directory: tusStorageDir,
     }),
-    // Naming function to potentially use metadata early (optional)
-    // namingFunction: (req) => { ... }
+    // Add namingFunction to try and get metadata early (optional but helpful for logging/debugging)
+    namingFunction: (req) => {
+        // Extract metadata here if possible, otherwise rely on EVENT_UPLOAD_COMPLETE
+        // For now, just return a basic ID or rely on default
+        // const metadata = req.headers['upload-metadata']; // Example, check actual header format
+        // log(`[TUS Naming] Request Headers: ${JSON.stringify(req.headers)}`, 'debug'); // Log headers
+        // Could potentially return ID based on expected metadata if available
+        return Date.now().toString(); // Placeholder ID generation
+    },
+    // It's good practice to define respectful termination handling
+    respectForwardedHeaders: true // If behind a proxy like Nginx
 });
 
 // --- Event Listener for Upload Completion ---
@@ -154,4 +164,7 @@ function mountTusServer(app) {
     });
 }
 
-module.exports = { mountTusServer }; 
+
+
+
+module.exports = { mountTusServer };

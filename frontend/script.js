@@ -1748,13 +1748,7 @@ function init() {
         logError('[Script] 업로드 버튼을 찾을 수 없습니다.');
     }
     
-    // upload.js의 초기화 함수 호출
-    if (typeof window.initializeUploader === 'function') {
-        logLog('[Script] upload.js 초기화 함수 호출');
-        window.initializeUploader();
-    } else {
-        logError('[Script] upload.js의 초기화 함수를 찾을 수 없습니다.');
-    }
+
     
     // 잘라내기/붙여넣기 초기화
     initClipboardOperations();

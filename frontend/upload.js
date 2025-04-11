@@ -1,6 +1,5 @@
-// frontend/upload.js (TUS Version)
 
-// --- 전역 변수 ---
+
 let isCancelled = false;
 let currentUploads = {}; // 진행 중인 TUS 업로드 객체 관리 (파일별)
 let totalBytesToUpload = 0;
@@ -27,10 +26,6 @@ let totalUploadSizeEl = null;
 // 백엔드 TUS 엔드포인트
 const TUS_ENDPOINT = `${API_BASE_URL}/api/tus/upload/`; // 백엔드 tus-server.js 에 설정된 경로
 
-// --- 로깅 함수 (script.js 와 호환되도록 또는 자체 정의) ---
-const logLog = (message) => console.log(`[Upload] ${message}`);
-const logError = (message, error) => console.error(`[Upload] ${message}`, error);
-const logWarn = (message) => console.warn(`[Upload] ${message}`);
 
 // --- 업로드 모달 표시/숨김 (기존과 유사하게 UI 초기화) ---
 function showUploadModal() {
