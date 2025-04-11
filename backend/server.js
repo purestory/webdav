@@ -1826,73 +1826,7 @@ function escapeShellArg(arg) {
     return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
-// 새 폴더 생성 라우터
-app.post('/api/files/:folderPath(*)', async (req, res) => {
-  const folderPathRaw = req.params.folderPath;
-  logWithIP(`새 폴더 생성 요청 수신 - Raw Path: ${folderPathRaw}`, req, 'info');
 
-  if (!folderPathRaw) {
-    errorLogWithIP('새 폴더 생성 오류: 경로가 비어있음', null, req);
-    return res.status(400).json({ success: false, message: '폴더 경로가 필요합니다.' });
-  }
-
-  let decodedPath;
-  try {
-    // 경로 디코딩
-    decodedPath = decodeURIComponent(folderPathRaw);
-    logWithIP(`Decoded Path: ${decodedPath}`, req);
-  } catch (e) {
-    errorLogWithIP('새 폴더 생성 오류: 경로 디코딩 실패', e, req);
-    return res.status(400).json({ success: false, message: '잘못된 경로 형식입니다.' });
-  }
-
-  const sanitizedPath = decodedPath.replace(/^\/+/, '').replace(/\/+$/, '');
-  const targetFullPath = path.join(ROOT_DIRECTORY, sanitizedPath);
-  logWithIP(`Target Full Path: ${targetFullPath}`, req);
-
-  // 보안 검사
-  if (!targetFullPath.startsWith(ROOT_DIRECTORY + path.sep) && targetFullPath !== ROOT_DIRECTORY) {
-    errorLogWithIP('새 폴더 생성 오류: 허용되지 않은 경로 접근 시도', { requestedPath: sanitizedPath, resolvedPath: targetFullPath }, req);
-    return res.status(403).json({ success: false, message: '허용되지 않은 경로입니다.' });
-  }
-  const folderName = path.basename(sanitizedPath);
-  if (/[\\/:*?"<>|]/.test(folderName)) {
-      errorLogWithIP('새 폴더 생성 오류: 유효하지 않은 폴더 이름', { folderName: folderName }, req);
-      return res.status(400).json({ success: false, message: '폴더 이름에 사용할 수 없는 문자가 포함되어 있습니다.' });
-  }
-  if (Buffer.byteLength(targetFullPath, 'utf8') > MAX_PATH_BYTES) {
-    errorLogWithIP('새 폴더 생성 오류: 경로가 너무 김', { path: targetFullPath }, req);
-    return res.status(400).json({ success: false, message: `경로가 너무 깁니다. (최대 ${MAX_PATH_BYTES} 바이트)` });
-  }
-  if (isPathAccessRestricted(sanitizedPath)) {
-      errorLogWithIP('새 폴더 생성 오류: 대상 폴더 또는 상위 폴더 잠김', { path: sanitizedPath }, req);
-      return res.status(403).json({ success: false, message: '대상 폴더 또는 상위 폴더가 잠겨 있어 생성할 수 없습니다.' });
-  }
-
-  // *** 직접 폴더 생성 로직 ***
-  try {
-    // recursive: true 옵션은 부모 디렉토리가 없으면 생성하고, 이미 폴더가 존재해도 오류를 발생시키지 않음 (Node.js v10.12.0+)
-    // 하지만 명시적으로 존재 여부를 확인하고 싶다면 fs.promises.access 사용 가능
-    // 여기서는 recursive: true를 사용하여 단순화
-    await fs.promises.mkdir(targetFullPath, { recursive: true, mode: 0o777 });
-    logWithIP(`폴더 생성 성공: ${targetFullPath}`, req, 'info');
-    res.status(201).json({ success: true, message: '폴더 생성 성공' });
-    // 디스크 사용량 갱신 (비동기)
-    getDiskUsage().catch(err => errorLogWithIP('폴더 생성 후 디스크 사용량 갱신 오류', err, req));
-  } catch (error) {
-      // mkdir 자체에서 발생하는 오류 처리 (예: 권한 문제 EACCES, 디스크 공간 부족 ENOSPC 등)
-      errorLogWithIP(`폴더 생성 실패: ${targetFullPath}`, error, req);
-      // 이미 존재하는 경우는 recursive: true 로 인해 오류 발생 안 함
-      if (error.code === 'EACCES') {
-           res.status(403).json({ success: false, message: '폴더 생성 권한이 없습니다.' });
-      } else {
-           res.status(500).json({ success: false, message: '폴더 생성 중 오류가 발생했습니다.' });
-      }
-  }
-  // *** 직접 생성 로직 끝 ***
-
-  // --- 기존 워커 호출 로직 제거됨 --- 
-});
 
 // 파일 및 폴더 삭제 라우터 (기존 - 워커 사용)
 app.post('/api/items/delete', async (req, res) => {
@@ -2041,11 +1975,25 @@ const cleanupTmpDirectory = async () => {
 };
 
 // 외부에서 사용할 수 있도록 함수 노출 (추가)
+// *** 수정된 module.exports ***
 module.exports = {
-  app: app, // 기존 Express 앱 객체 (만약 필요하다면)
-  cleanupTmpDirectory: cleanupTmpDirectory,
-  // 다른 필요한 함수나 변수가 있다면 여기에 추가
+  app: app, // 기존 export 유지
+  log,
+  logWithIP,
+  errorLog,
+  errorLogWithIP,
+  sanitizeFilename,
+  updateDiskUsage,
+  // 필요한 다른 함수나 변수가 있다면 여기에 추가
 };
+
 
 // TUS 서버 마운트 (다른 app.use 또는 라우트 설정 이후, 서버 시작 전)
 mountTusServer(app);
+
+
+// 서버 시작 (기존 코드가 있다면 유지)
+startServer().catch(err => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
+});
