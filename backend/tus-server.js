@@ -44,7 +44,7 @@ function tusErrorLog(message, error) {
 // --- Configuration ---
 const tusStorageDir = path.join(__dirname, 'tus-storage'); // Directory for temporary TUS uploads
 const finalStorageDir = path.join(__dirname, 'share-folder'); // Final destination
-const tusApiPath = '/api/tus/upload/'; // TUS endpoint path (슬래시로 끝나는 형식)
+const tusApiPath = '/api/tus/upload'; // 끝 슬래시 제거
 
 // Ensure TUS storage directory exists (동기식)
 function ensureTusStorageDir() {
@@ -82,6 +82,8 @@ async function fileExists(filePath) {
 const processingFiles = new Map();
 
 // --- TUS 핸들러 함수 (외부 이벤트 루프에서 안전하게 호출 가능) ---
+// 업로드 완료 핸들러 함수 개선
+// --- TUS 핸들러 함수 (개선) ---
 function handleCompletedUpload(file) {
     if (!file || !file.id) {
         tusErrorLog('Invalid file object received in handleCompletedUpload', null);
@@ -94,26 +96,46 @@ function handleCompletedUpload(file) {
         return;
     }
 
+    // 처리 시작 시간 기록
+    const startTime = Date.now();
+    
     // 처리 중인 파일로 표시
-    processingFiles.set(file.id, true);
+    processingFiles.set(file.id, { 
+        startTime: startTime,
+        status: 'processing' 
+    });
+    
+    tusLog(`Starting to process file ${file.id}, marked as processing`, 'info');
 
-    // 비동기 처리 시작
-    setTimeout(async () => {
-        try {
-            tusLog(`Started processing file ID: ${file.id}`, 'info');
-            await processTusFile(file);
-        } catch (error) {
-            tusErrorLog(`Error in handleCompletedUpload for file ${file.id}`, error);
-        } finally {
-            // 처리 완료 후 Map에서 제거
+    // 비동기 처리 즉시 시작 (Promise 체인 사용)
+    Promise.resolve()
+        .then(() => processTusFile(file))
+        .then(result => {
+            const processingTime = Date.now() - startTime;
+            tusLog(`File ${file.id} processing completed in ${processingTime}ms with result: ${result ? 'success' : 'failure'}`, 'info');
+            return result;
+        })
+        .catch(error => {
+            tusErrorLog(`Error processing file ${file.id}: ${error.message}`, error);
+            return false;
+        })
+        .finally(() => {
             processingFiles.delete(file.id);
-        }
-    }, 100);
+            tusLog(`Removed file ${file.id} from processing map`, 'debug');
+        });
 }
 
+
+
+
+
+
+
 // --- 파일 처리 함수 (공통화) ---
+// --- 파일 처리 함수 개선 (폴더 인식 추가) ---
 async function processTusFile(file) {
     try {
+        const startTime = Date.now();
         tusLog(`Upload completed for file ID: ${file.id}`, 'info');
         
         // 1. 메타데이터 추출 및 검증
@@ -139,29 +161,66 @@ async function processTusFile(file) {
             return false;
         }
 
+        // 소스 파일 확인
+        const sourcePath = path.join(tusStorageDir, file.id);
+        if (!fsSync.existsSync(sourcePath)) {
+            tusErrorLog(`Source file not found: ${sourcePath}`, null);
+            return false;
+        }
+        
+        const stats = fsSync.statSync(sourcePath);
+        tusLog(`Source file size: ${stats.size} bytes`, 'info');
+        
+        // 폴더 처리 (0바이트 파일)
+        if (stats.size === 0) {
+            tusLog(`Detected directory: ${decodedRelativePath}`, 'info');
+            const dirPath = path.join(finalStorageDir, targetPathBase, decodedRelativePath);
+            
+            try {
+                if (!fsSync.existsSync(dirPath)) {
+                    await fs.mkdir(dirPath, { recursive: true, mode: 0o777 });
+                    tusLog(`Created directory: ${dirPath}`, 'info');
+                } else {
+                    tusLog(`Directory already exists: ${dirPath}`, 'info');
+                }
+                
+                // 소스 파일(디렉토리 플레이스홀더) 및 메타데이터 삭제
+                await fs.unlink(sourcePath);
+                tusLog(`Empty directory placeholder file deleted: ${sourcePath}`, 'info');
+                
+                const metaFile = path.join(tusStorageDir, `${file.id}.json`);
+                if (fsSync.existsSync(metaFile)) {
+                    await fs.unlink(metaFile);
+                    tusLog(`Metadata file deleted: ${metaFile}`, 'info');
+                }
+                
+                return true;
+            } catch (dirError) {
+                tusErrorLog(`Error creating directory: ${dirError.message}`, dirError);
+                return false;
+            }
+        }
+        
+        // 일반 파일 처리
         tusLog(`Processing file: ${originalFilename}, Path: ${targetPathBase}, RelativePath: ${decodedRelativePath}`, 'info');
 
         // 2. 최종 경로 계산
         const sanitizedFilename = utilFunctions.sanitizeFilename(path.basename(decodedRelativePath));
-        const dirPath = path.dirname(decodedRelativePath) === '.' ? '' : path.dirname(decodedRelativePath);
+        let dirPath = '';
+        
+        // 경로 구분자 정규화 (Windows/Unix 모두 처리)
+        if (decodedRelativePath.includes('/') || decodedRelativePath.includes('\\')) {
+            // 모든 백슬래시를 슬래시로 변환
+            const normalizedPath = decodedRelativePath.replace(/\\/g, '/');
+            dirPath = path.dirname(normalizedPath);
+            dirPath = dirPath === '.' ? '' : dirPath;
+        }
         
         const finalDirPath = path.join(finalStorageDir, targetPathBase, dirPath);
         const finalFilePath = path.join(finalDirPath, sanitizedFilename);
         
         tusLog(`Final directory: ${finalDirPath}`, 'info');
         tusLog(`Final file path: ${finalFilePath}`, 'info');
-
-        // 임시 파일 경로 확인
-        const sourcePath = path.join(tusStorageDir, file.id);
-        if (!fsSync.existsSync(sourcePath)) {
-            tusErrorLog(`Source file not found: ${sourcePath}`, null);
-            return false;
-        } else {
-            tusLog(`Source file exists: ${sourcePath}`, 'debug');
-            // 파일 크기 로깅
-            const stats = fsSync.statSync(sourcePath);
-            tusLog(`Source file size: ${stats.size} bytes`, 'debug');
-        }
 
         // 3. 대상 디렉토리 생성
         try {
@@ -170,7 +229,7 @@ async function processTusFile(file) {
                 tusLog(`Created destination directory: ${finalDirPath}`, 'info');
             }
         } catch (mkdirError) {
-            tusErrorLog(`Error creating directory ${finalDirPath}`, mkdirError);
+            tusErrorLog(`Error creating directory ${finalDirPath}: ${mkdirError.message}`, mkdirError);
             return false;
         }
 
@@ -178,29 +237,96 @@ async function processTusFile(file) {
         try {
             // 파일 존재 여부 확인
             const fileAlreadyExists = fsSync.existsSync(finalFilePath);
+            let targetPath = finalFilePath;
             
             if (fileAlreadyExists) {
                 // 충돌 처리: 타임스탬프 추가
                 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
                 const fileExt = path.extname(finalFilePath);
                 const fileBase = path.basename(finalFilePath, fileExt);
-                const newFilePath = path.join(
+                targetPath = path.join(
                     path.dirname(finalFilePath),
                     `${fileBase}_${timestamp}${fileExt}`
                 );
                 
-                tusLog(`File already exists, saving as: ${newFilePath}`, 'warn');
-                // rename 대신 직접 복사 후 삭제
-                await fs.copyFile(sourcePath, newFilePath);
-                tusLog(`File copied with new name: ${newFilePath}`, 'info');
-                await fs.unlink(sourcePath);
-                tusLog(`Source file deleted after copy: ${sourcePath}`, 'debug');
-            } else {
-                // 그대로 이동 (rename 대신 복사 후 삭제)
-                await fs.copyFile(sourcePath, finalFilePath);
-                tusLog(`File copied successfully: ${finalFilePath}`, 'info');
-                await fs.unlink(sourcePath);
-                tusLog(`Source file deleted after copy: ${sourcePath}`, 'debug');
+                tusLog(`File already exists, saving as: ${targetPath}`, 'warn');
+            }
+            
+            // 1. 먼저 fs.rename 시도 (가장 효율적)
+            try {
+                await fs.rename(sourcePath, targetPath);
+                tusLog(`File moved successfully (rename): ${targetPath}`, 'info');
+                const targetStats = fsSync.statSync(targetPath);
+                tusLog(`Final file size: ${targetStats.size} bytes`, 'info');
+            } catch (renameError) {
+                // EXDEV 오류(크로스 디바이스 이동) 또는 기타 오류 시 복사+삭제 시도
+                tusLog(`fs.rename failed (${renameError.code}): ${renameError.message}, trying copy+delete`, 'warn');
+                
+                // 2. 파일 복사 시도
+                try {
+                    await fs.copyFile(sourcePath, targetPath);
+                    tusLog(`File copied successfully: ${targetPath}`, 'info');
+                    
+                    // 소스 파일이 성공적으로 복사되었는지 확인
+                    if (fsSync.existsSync(targetPath)) {
+                        const targetStats = fsSync.statSync(targetPath);
+                        const sourceStats = fsSync.statSync(sourcePath);
+                        
+                        if (targetStats.size === sourceStats.size) {
+                            tusLog(`Verified target file size: ${targetStats.size} bytes`, 'debug');
+                            
+                            // 소스 파일 삭제
+                            await fs.unlink(sourcePath);
+                            tusLog(`Source file deleted: ${sourcePath}`, 'debug');
+                        } else {
+                            throw new Error(`Size mismatch after copy: source=${sourceStats.size}, target=${targetStats.size}`);
+                        }
+                    } else {
+                        throw new Error('Target file not created after copy');
+                    }
+                } catch (copyError) {
+                    // 3. Node.js 방식 실패 시 시스템 명령어로 시도
+                    tusErrorLog(`fs.copyFile failed: ${copyError.message}`, copyError);
+                    
+                    const { exec } = require('child_process');
+                    const util = require('util');
+                    const execPromise = util.promisify(exec);
+                    
+                    tusLog(`Trying system cp command for: ${file.id}`, 'warn');
+                    // 안전한 명령어 실행을 위해 따옴표 사용
+                    const cpCommand = `cp -a "${sourcePath}" "${targetPath}"`;
+                    
+                    try {
+                        const { stdout, stderr } = await execPromise(cpCommand);
+                        
+                        if (stdout) {
+                            tusLog(`cp command output: ${stdout.trim()}`, 'debug');
+                        }
+                        
+                        if (stderr && stderr.trim()) {
+                            tusErrorLog(`cp command stderr: ${stderr.trim()}`, null);
+                        }
+                        
+                        // 파일 존재 및 크기 검증
+                        if (fsSync.existsSync(targetPath)) {
+                            const targetStats = fsSync.statSync(targetPath);
+                            const sourceStats = fsSync.statSync(sourcePath);
+                            
+                            if (targetStats.size === sourceStats.size) {
+                                // 원본 삭제
+                                await execPromise(`rm "${sourcePath}"`);
+                                tusLog(`Removed source file using system rm: ${sourcePath}`, 'debug');
+                            } else {
+                                throw new Error(`Size mismatch after system cp: source=${sourceStats.size}, target=${targetStats.size}`);
+                            }
+                        } else {
+                            throw new Error('Target file not created after system cp');
+                        }
+                    } catch (cpError) {
+                        tusErrorLog(`System cp/rm failed: ${cpError.message}`, cpError);
+                        return false;
+                    }
+                }
             }
             
             // 메타데이터 파일 삭제
@@ -220,16 +346,30 @@ async function processTusFile(file) {
                 }
             }
             
+            const processingTime = Date.now() - startTime;
+            tusLog(`File processing completed in ${processingTime}ms: ${path.basename(targetPath)}`, 'info');
             return true;
         } catch (moveError) {
-            tusErrorLog(`Error moving file ${file.id} to ${finalFilePath}`, moveError);
+            tusErrorLog(`Error moving file ${file.id} to ${finalFilePath}: ${moveError.message}`, moveError);
             return false;
         }
     } catch (e) {
-        tusErrorLog('Unhandled error in processTusFile', e);
+        tusErrorLog(`Unhandled error in processTusFile: ${e.message}`, e);
         return false;
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 // TUS 서버 초기화 함수 (항상 새로 생성)
 function initTusServer() {
@@ -243,21 +383,39 @@ function initTusServer() {
             datastore: new FileStore({
                 directory: tusStorageDir,
             }),
+            // 해시 ID를 직접 지원하고 타임스탬프도 지원
             namingFunction: (req) => {
                 return Date.now().toString();
             },
             respectForwardedHeaders: true
         });
         
-        // 이벤트 리스너 등록
-        tusServer.on(EVENTS.EVENT_UPLOAD_COMPLETE, (event) => {
-            tusLog(`EVENT_UPLOAD_COMPLETE received for file: ${event.file.id}`, 'info');
-            handleCompletedUpload(event.file);  // 비동기 핸들러로 처리
-        });
+        // 명시적 이벤트 리스너로 모든 TUS 이벤트 로깅
+        for (const eventKey in EVENTS) {
+            tusServer.on(EVENTS[eventKey], (event) => {
+                tusLog(`TUS EVENT: ${eventKey} for file ID: ${event.file?.id || 'unknown'}`, 'info');
+                
+                // 업로드 완료 이벤트 특별 처리
+                if (eventKey === 'EVENT_UPLOAD_COMPLETE') {
+                    if (event.file && event.file.size > 0) {
+                        // 실제 파일인 경우만 처리
+                        handleCompletedUpload(event.file);
+                    } else if (event.file) {
+                        // 0바이트는 폴더일 가능성 체크
+                        handleDirectoryCreation(event.file);
+                    }
+                }
+            });
+        }
         
-        // 추가 진단용 이벤트 리스너
-        tusServer.on(EVENTS.EVENT_FILE_CREATED, (event) => {
-            tusLog(`EVENT_FILE_CREATED for file: ${event.file.id}`, 'debug');
+        // 기존 이벤트 리스너도 유지 (이중 보험)
+        tusServer.on(EVENTS.EVENT_UPLOAD_COMPLETE, (event) => {
+            tusLog(`Direct EVENT_UPLOAD_COMPLETE for file: ${event.file?.id || 'unknown'}`, 'info');
+            if (event.file && event.file.size > 0) {
+                handleCompletedUpload(event.file);
+            } else if (event.file) {
+                handleDirectoryCreation(event.file);
+            }
         });
         
         tusLog('TUS server initialized successfully', 'info');
@@ -267,6 +425,143 @@ function initTusServer() {
         return false;
     }
 }
+
+
+// 폴더 처리 전용 함수
+async function handleDirectoryCreation(file) {
+    try {
+        if (!file || !file.id) {
+            tusErrorLog('Invalid file object received in handleDirectoryCreation', null);
+            return false;
+        }
+        
+        const metadata = file.metadata || {};
+        if (!metadata.filename) {
+            tusErrorLog(`Missing filename in metadata for directory ID: ${file.id}`, null);
+            return false;
+        }
+        
+        // 폴더 경로 계산
+        const targetPathBase = metadata.targetPath || '';
+        let dirName;
+        
+        try {
+            dirName = metadata.relativePath ? 
+                decodeURIComponent(metadata.relativePath) : metadata.filename;
+        } catch (e) {
+            tusErrorLog(`Failed to decode directory path: ${metadata.relativePath}`, e);
+            return false;
+        }
+        
+        tusLog(`Processing directory: ${dirName}, in path: ${targetPathBase}`, 'info');
+        
+        // 폴더 생성
+        const dirFullPath = path.join(finalStorageDir, targetPathBase, dirName);
+        
+        if (!fsSync.existsSync(dirFullPath)) {
+            await fs.mkdir(dirFullPath, { recursive: true, mode: 0o777 });
+            tusLog(`Created directory: ${dirFullPath}`, 'info');
+        } else {
+            tusLog(`Directory already exists: ${dirFullPath}`, 'info');
+        }
+        
+        // 임시 파일 및 메타데이터 정리
+        const sourcePath = path.join(tusStorageDir, file.id);
+        if (fsSync.existsSync(sourcePath)) {
+            await fs.unlink(sourcePath);
+            tusLog(`Removed temporary directory placeholder: ${sourcePath}`, 'debug');
+        }
+        
+        const metaFile = path.join(tusStorageDir, `${file.id}.json`);
+        if (fsSync.existsSync(metaFile)) {
+            await fs.unlink(metaFile);
+            tusLog(`Removed directory metadata: ${metaFile}`, 'debug');
+        }
+        
+        return true;
+    } catch (error) {
+        tusErrorLog(`Error handling directory creation: ${error.message}`, error);
+        return false;
+    }
+}
+
+
+
+// 기존 파일 처리 함수
+// 서버 시작 시 기존 파일 처리
+function processExistingFiles() {
+    setTimeout(async () => {
+        try {
+            const files = fsSync.readdirSync(tusStorageDir);
+            
+            // 메타데이터 파일 목록
+            const jsonFiles = files.filter(file => file.endsWith('.json'));
+            tusLog(`Found ${jsonFiles.length} metadata files to process`, 'info');
+            
+            // 파일 ID 추출 (확장자 제외)
+            const fileIds = new Set(files.filter(file => !file.endsWith('.json')));
+            tusLog(`Found ${fileIds.size} actual files in storage`, 'info');
+            
+            for (const jsonFile of jsonFiles) {
+                try {
+                    const fileId = path.basename(jsonFile, '.json');
+                    const filePath = path.join(tusStorageDir, fileId);
+                    
+                    // 파일과 메타데이터가 모두 존재하는지 확인
+                    if (fileIds.has(fileId)) {
+                        const metadataPath = path.join(tusStorageDir, jsonFile);
+                        const metadataContent = await fs.readFile(metadataPath, 'utf8');
+                        const fileData = JSON.parse(metadataContent);
+                        
+                        // 파일 크기와 상태 확인
+                        const fileStats = fsSync.statSync(filePath);
+                        tusLog(`File ${fileId}: size=${fileData.size}, actual=${fileStats.size}, offset=${fileData.offset || 'unknown'}`, 'debug');
+                        
+                        // 완료된 파일 또는 0바이트 파일(폴더) 처리
+                        if (fileData.size === 0) {
+                            // 폴더로 처리
+                            tusLog(`Processing directory: ${fileId}`, 'info');
+                            handleDirectoryCreation({ 
+                                id: fileId, 
+                                metadata: fileData.metadata || {},
+                                size: 0
+                            });
+                        } else if (fileData.offset === fileData.size || fileData.offset === undefined) {
+                            // 완료된 파일로 처리
+                            tusLog(`Processing completed file: ${fileId}`, 'info');
+                            handleCompletedUpload({ 
+                                id: fileId, 
+                                metadata: fileData.metadata || {},
+                                size: fileData.size
+                            });
+                        } else {
+                            tusLog(`Skipping incomplete file: ${fileId} (${fileData.offset || 0}/${fileData.size})`, 'debug');
+                        }
+                    } else {
+                        tusLog(`Metadata without file: ${jsonFile}`, 'warn');
+                    }
+                } catch (e) {
+                    tusErrorLog(`Error processing file: ${jsonFile}`, e);
+                }
+            }
+        } catch (e) {
+            tusErrorLog('Error processing existing files', e);
+        }
+    }, 2000);
+}
+
+
+
+// 서버 실행 시 즉시 기존 파일 처리 (추가)
+setTimeout(() => {
+    tusLog('Running immediate file check...', 'info');
+    processExistingFiles();
+}, 1000);
+
+
+
+
+
 
 // 마운트 함수 (utilFunctions 매개변수 추가)
 function mountTusServer(app, utils = {}) {
@@ -310,21 +605,30 @@ function mountTusServer(app, utils = {}) {
         setTimeout(async () => {
             try {
                 const files = fsSync.readdirSync(tusStorageDir);
-                const jsonFiles = files.filter(file => file.endsWith('.json'));
-                tusLog(`Found ${jsonFiles.length} incomplete uploads to process`, 'info');
                 
-                for (const jsonFile of jsonFiles) {
-                    const fileId = path.basename(jsonFile, '.json');
-                    const filePath = path.join(tusStorageDir, fileId);
-                    
-                    if (fsSync.existsSync(filePath)) {
-                        try {
-                            const metadataStr = await fs.readFile(path.join(tusStorageDir, jsonFile), 'utf8');
-                            const metadata = JSON.parse(metadataStr);
-                            handleCompletedUpload({ id: fileId, metadata: metadata.metadata || {} });
-                        } catch (e) {
-                            tusErrorLog(`Error processing existing file ${fileId}`, e);
-                        }
+                // 모든 파일을 찾아서 처리
+                const processableFiles = files.filter(file => 
+                    !file.endsWith('.json') && 
+                    fsSync.existsSync(path.join(tusStorageDir, `${file}.json`))
+                );
+                
+                tusLog(`Found ${processableFiles.length} files to process`, 'info');
+                
+                for (const fileId of processableFiles) {
+                    try {
+                        const metadataPath = path.join(tusStorageDir, `${fileId}.json`);
+                        const metadataStr = await fs.readFile(metadataPath, 'utf8');
+                        const metadata = JSON.parse(metadataStr);
+                        
+                        // 파일 처리 로직 호출
+                        handleCompletedUpload({ 
+                            id: fileId, 
+                            metadata: metadata.metadata || {},
+                            size: metadata.size || 0,
+                            offset: metadata.offset || 0
+                        });
+                    } catch (e) {
+                        tusErrorLog(`Error processing existing file ${fileId}`, e);
                     }
                 }
             } catch (e) {
