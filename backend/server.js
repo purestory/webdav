@@ -94,7 +94,7 @@ async function initializeDirectories() {
 const LOG_LEVELS = { minimal: 0, info: 1, debug: 2 };
 const isDevelopment = process.env.NODE_ENV === 'development';
 // !!!! 로그 레벨 기본값을 minimal로 복원 !!!!
-let currentLogLevel = LOG_LEVELS.minimal; 
+let currentLogLevel = LOG_LEVELS.debug; 
 // let currentLogLevel = isDevelopment ? LOG_LEVELS.info : LOG_LEVELS.minimal; // <- 환경 변수 기반 설정은 주석 유지
 const requestLogLevel = 'info'; // 요청 로그 레벨은 info 유지
 
