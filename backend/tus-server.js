@@ -85,10 +85,16 @@ const processingFiles = new Map();
 // 업로드 완료 핸들러 함수 개선
 // --- TUS 핸들러 함수 (개선) ---
 function handleCompletedUpload(file) {
+    // <<<--- 추가된 로그 (호출 확인) --->>>
+    tusLog(`[EVENT_HANDLER_CALLED] handleCompletedUpload called. Received file object: ${JSON.stringify(file)}`, 'debug'); 
+
     if (!file || !file.id) {
-        tusErrorLog('Invalid file object received in handleCompletedUpload', null);
-        return;
+        tusErrorLog('Invalid or incomplete file object received in handleCompletedUpload', null);
+        return; // 유효하지 않은 객체면 처리 중단
     }
+    
+    // <<<--- 추가된 로그 (메타데이터 확인) --->>>
+    tusLog(`handleCompletedUpload: File ID: ${file.id}, Metadata: ${JSON.stringify(file.metadata)}, Size: ${file.size}`, 'info');
 
     // 이미 처리 중인 파일인지 확인
     if (processingFiles.has(file.id)) {
@@ -109,15 +115,17 @@ function handleCompletedUpload(file) {
 
     // 비동기 처리 즉시 시작 (Promise 체인 사용)
     Promise.resolve()
-        .then(() => processTusFile(file))
+        // 이전에 제안한 개선된 processTusFile 함수 사용
+        .then(() => processTusFile(file)) 
         .then(result => {
             const processingTime = Date.now() - startTime;
-            tusLog(`File ${file.id} processing completed in ${processingTime}ms with result: ${result ? 'success' : 'failure'}`, 'info');
+            tusLog(`File ${file.id} processing finished in ${processingTime}ms with result: ${result ? 'success' : 'failure'}`, 'info');
             return result;
         })
         .catch(error => {
-            tusErrorLog(`Error processing file ${file.id}: ${error.message}`, error);
-            return false;
+            tusErrorLog(`Unhandled error during processTusFile chain for ${file.id}: ${error.message}`, error);
+             // 실패 시에도 finally 블록 실행됨
+            return false; 
         })
         .finally(() => {
             processingFiles.delete(file.id);
@@ -564,77 +572,85 @@ setTimeout(() => {
 
 
 // 마운트 함수 (utilFunctions 매개변수 추가)
+// 마운트 함수 (utilFunctions 매개변수 추가)
 function mountTusServer(app, utils = {}) {
-    if (!app) {
-        tusErrorLog('Cannot mount TUS server: app instance is missing', null);
-        return false;
-    }
-    
-    // 유틸리티 함수 설정
-    if (utils) {
-        if (utils.log) utilFunctions.log = utils.log;
-        if (utils.errorLog) utilFunctions.errorLog = utils.errorLog;
-        if (utils.sanitizeFilename) utilFunctions.sanitizeFilename = utils.sanitizeFilename;
-        if (utils.updateDiskUsage) utilFunctions.updateDiskUsage = utils.updateDiskUsage;
-    }
-    
     try {
-        // 스토리지 디렉토리 확인
-        if (!ensureTusStorageDir()) {
-            tusErrorLog('TUS storage directory not ready', null);
-            return false;
+        utilFunctions = { ...utilFunctions, ...utils }; // 유틸리티 함수 병합
+        // 로깅 함수 재설정 (utils에서 새로운 함수가 제공될 수 있음)
+        tusLog = utilFunctions.log || console.log;
+        tusErrorLog = utilFunctions.errorLog || console.error;
+
+        // === 수정 시작 ===
+        // 1. initTusServer() 호출하고 성공 여부만 확인
+        const isInitialized = initTusServer(); 
+        if (!isInitialized) {
+            // 초기화 실패 시 오류 발생시키고 마운트 중단
+            throw new Error("Failed to initialize TUS server instance.");
         }
+        // initTusServer 내부에서 모듈 레벨 tusServer 변수에 인스턴스가 할당됨
         
-        // 서버 초기화
-        if (!initTusServer() || !tusServer) {
-            tusErrorLog('TUS server initialization failed', null);
-            return false;
+        // 2. 모듈 레벨 tusServer 변수가 실제 인스턴스인지 다시 확인 (방어 코드)
+        if (!tusServer) {
+            throw new Error("TUS server instance is not available after initialization.");
         }
-        
-        // 테스트 로그
-        tusLog('About to mount TUS server...', 'info');
-        console.log('[TUS-MOUNT] Mounting TUS server to Express app');
-        
-        // 라우트 등록
-        app.all(`${tusApiPath}*`, (req, res, next) => {
-            tusLog(`Request: ${req.method} ${req.url}`, 'debug');
-            return tusServer.handle.bind(tusServer)(req, res, next);
+        // === 수정 끝 ===
+
+        tusLog('TUS server instance initialized successfully', 'info');
+
+        // --- 이벤트 리스너 등록 ---
+        tusLog('Registering TUS event listeners...', 'debug');
+
+        // <<<--- 중요: 업로드 완료 이벤트 핸들러 --->>>
+        // === 수정: 모듈 레벨 tusServer 변수 사용 ===
+        tusServer.on(EVENTS.POST_FINISH, (req, res, upload) => {
+            tusLog(`[TUS_EVENT] POST_FINISH triggered. Upload object: ${JSON.stringify(upload)}`, 'info'); 
+
+            if (upload && upload.id) {
+                 const fileInfo = {
+                     id: upload.id,
+                     metadata: upload.metadata || (req.headers['upload-metadata'] ? parseMetadataString(req.headers['upload-metadata']) : {}), 
+                     size: upload.size || (req.headers['upload-length'] ? parseInt(req.headers['upload-length'], 10) : 0) 
+                 };
+                 tusLog(`Preparing to call handleCompletedUpload with fileInfo: ${JSON.stringify(fileInfo)}`, 'debug');
+                 
+                 setTimeout(() => {
+                     handleCompletedUpload(fileInfo);
+                 }, 50); 
+
+            } else {
+                 tusErrorLog('POST_FINISH event received without valid upload object or ID', null);
+            }
         });
         
-        // 기존 파일 처리 (서버 재시작 시)
-        setTimeout(async () => {
-            try {
-                const files = fsSync.readdirSync(tusStorageDir);
-                
-                // 모든 파일을 찾아서 처리
-                const processableFiles = files.filter(file => 
-                    !file.endsWith('.json') && 
-                    fsSync.existsSync(path.join(tusStorageDir, `${file}.json`))
-                );
-                
-                tusLog(`Found ${processableFiles.length} files to process`, 'info');
-                
-                for (const fileId of processableFiles) {
-                    try {
-                        const metadataPath = path.join(tusStorageDir, `${fileId}.json`);
-                        const metadataStr = await fs.readFile(metadataPath, 'utf8');
-                        const metadata = JSON.parse(metadataStr);
-                        
-                        // 파일 처리 로직 호출
-                        handleCompletedUpload({ 
-                            id: fileId, 
-                            metadata: metadata.metadata || {},
-                            size: metadata.size || 0,
-                            offset: metadata.offset || 0
-                        });
-                    } catch (e) {
-                        tusErrorLog(`Error processing existing file ${fileId}`, e);
-                    }
-                }
-            } catch (e) {
-                tusErrorLog('Error processing existing files', e);
-            }
-        }, 2000);
+        // 다른 이벤트 리스너 (POST_CREATE, POST_RECEIVE 등)
+        // === 수정: 모듈 레벨 tusServer 변수 사용 ===
+        tusServer.on(EVENTS.POST_CREATE, (req, res, upload) => {
+            tusLog(`[TUS_EVENT] POST_CREATE triggered for file ID: ${upload ? upload.id : 'unknown'}`, 'debug');
+        });
+        
+        // === 수정: 모듈 레벨 tusServer 변수 사용 ===
+        tusServer.on(EVENTS.POST_RECEIVE, (req, res, upload) => {
+             tusLog(`[TUS_EVENT] POST_RECEIVE triggered for file ID: ${upload ? upload.id : 'unknown'}. Offset: ${upload ? upload.offset : 'unknown'}`, 'debug');
+        });
+
+        tusLog('TUS event listeners registered successfully', 'debug');
+
+        // 미들웨어로 TUS 서버 마운트
+        tusLog(`About to mount TUS server at ${tusApiPath}`, 'info');
+        console.log(`[TUS-MOUNT] Mounting TUS server to Express app`);
+        
+        // TUS 요청 로깅 미들웨어
+        app.use(tusApiPath, (req, res, next) => {
+             tusLog(`[TUS_REQUEST] ${req.method} ${req.url}, Headers: ${JSON.stringify(req.headers)}`, 'trace'); 
+             next();
+        });
+        
+        // TUS 서버 핸들러
+        // === 수정: 모듈 레벨 tusServer 변수 사용 ===
+        app.all(`${tusApiPath}*`, tusServer.handle.bind(tusServer));
+        
+        // 기존 파일 처리 로직
+        processExistingFiles(); 
         
         tusLog(`TUS server mounted at ${tusApiPath}`, 'info');
         console.log(`[TUS-MOUNT] TUS server successfully mounted at ${tusApiPath}`);
@@ -645,6 +661,32 @@ function mountTusServer(app, utils = {}) {
         return false;
     }
 }
+
+// Upload-Metadata 헤더 파싱 함수 (필요시 추가)
+// ... (이하 코드는 변경 없음) ...
+
+
+
+// Upload-Metadata 헤더 파싱 함수 (필요시 추가)
+function parseMetadataString(metadataString) {
+    const metadata = {};
+    if (!metadataString) return metadata;
+    
+    metadataString.split(',').forEach(pair => {
+        const parts = pair.split(' ');
+        if (parts.length === 2) {
+            try {
+                // Base64 디코딩
+                metadata[parts[0]] = Buffer.from(parts[1], 'base64').toString('utf-8');
+            } catch (e) {
+                 tusErrorLog(`Failed to decode metadata part: ${pair}`, e);
+            }
+        }
+    });
+    return metadata;
+}
+
+
 
 // 모듈 내보내기 
 module.exports = { mountTusServer };
