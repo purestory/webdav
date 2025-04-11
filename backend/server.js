@@ -1974,19 +1974,8 @@ const cleanupTmpDirectory = async () => {
   }
 };
 
-// 외부에서 사용할 수 있도록 함수 노출 (추가)
-// *** 수정된 module.exports ***
-module.exports = {
-  app: app, // 기존 export 유지
-  log,
-  logWithIP,
-  errorLog,
-  errorLogWithIP,
-  sanitizeFilename,
-  updateDiskUsage,
-  // 필요한 다른 함수나 변수가 있다면 여기에 추가
-};
-
+// 공유 유틸리티 함수들을 tus-utils.js에서 가져와서 server.js의 함수들로 덮어씀
+require('./tus-utils');
 
 // TUS 서버 마운트 (다른 app.use 또는 라우트 설정 이후, 서버 시작 전)
 mountTusServer(app);

@@ -377,3 +377,43 @@ function logUploadActionStart(filesWithPaths, targetPath) {
 // 전역 스코프에 필요한 함수 노출 (script.js 등 다른 파일에서 사용하기 위함)
 window.startTusUpload = startTusUpload;
 // window.initUpload = initUpload; // 필요하다면
+// 외부 파일 드롭 처리 함수
+function handleExternalFileDrop(e, targetFolderItem = null) {
+    logLog('[handleExternalFileDrop] 외부 파일 드롭 처리 시작');
+    
+    // 드롭된 파일이 없으면 종료
+    if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) {
+        logWarn('[handleExternalFileDrop] 드롭된 파일이 없습니다.');
+        return;
+    }
+    
+    // 대상 경로 결정
+    let targetPath = currentPath || '';  // 기본값은 현재 경로
+    
+    // 특정 폴더에 드롭된 경우 해당 폴더 경로 사용
+    if (targetFolderItem && targetFolderItem.getAttribute('data-is-folder') === 'true') {
+        const folderName = targetFolderItem.getAttribute('data-name');
+        // '..'이 아닌 경우에만 처리
+        if (folderName !== '..') {
+            targetPath = targetFolderItem.getAttribute('data-path') || 
+                         (currentPath ? `${currentPath}/${folderName}` : folderName);
+            logLog(`[handleExternalFileDrop] 폴더에 드롭: ${targetPath}`);
+        }
+    }
+    
+    // File 객체 배열을 { file, relativePath } 형식으로 변환
+    const filesWithPaths = Array.from(e.dataTransfer.files).map(file => {
+        return {
+            file: file,
+            relativePath: file.name  // 기본적으로 파일명만 사용
+        };
+    });
+    
+    logLog(`[handleExternalFileDrop] ${filesWithPaths.length}개 파일 업로드 준비 완료, 대상 경로: ${targetPath || '루트'}`);
+    
+    // TUS 업로드 시작
+    startTusUpload(filesWithPaths, targetPath);
+}
+
+// 전역 스코프에 노출
+window.handleExternalFileDrop = handleExternalFileDrop;
