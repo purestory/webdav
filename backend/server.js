@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 3333;
 const archiver = require('archiver');
 const { promisify } = require('util');
 const fs_stream = require('fs');
+const { mountTusServer } = require('./tus-server'); // TUS 서버 모듈 import
 
 // 쉘 인자를 안전하게 이스케이프하는 함수 (추가)
 
@@ -2045,3 +2046,6 @@ module.exports = {
   cleanupTmpDirectory: cleanupTmpDirectory,
   // 다른 필요한 함수나 변수가 있다면 여기에 추가
 };
+
+// TUS 서버 마운트 (다른 app.use 또는 라우트 설정 이후, 서버 시작 전)
+mountTusServer(app);

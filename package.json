@@ -17,6 +17,8 @@
   "author": "purestory",
   "license": "MIT",
   "dependencies": {
+    "@tus/file-store": "^2.0.0",
+    "@tus/server": "^2.0.0",
     "archiver": "^7.0.1"
   }
 }
