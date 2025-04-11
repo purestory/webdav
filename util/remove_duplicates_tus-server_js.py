@@ -28,7 +28,7 @@ def remove_lines(file_path, ranges, target_file):
     return True
 
 # 이 스크립트가 대상으로 하는 파일 경로
-TARGET_FILE = "/home/purestory/webdav/backend/server.js"
+TARGET_FILE = "/home/purestory/webdav/backend/tus-server.js"
 
 # 삭제할 행 범위 (시작행, 끝행)
 ranges = [

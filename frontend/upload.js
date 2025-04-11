@@ -72,9 +72,14 @@ function hideUploadModal() {
         uploadProgressModal.style.display = 'none';
     }
     logLog('업로드 모달 숨김');
-    // 진행 중인 업로드 중단 (선택적)
-    cancelUpload();
+    
+    // 모든 업로드가 이미 완료된 경우는 취소 함수 호출하지 않음
+    // uploadedFileCount === totalFilesToUpload인 경우 모든 업로드가 완료된 상태
+    if (!(uploadedFileCount > 0 && uploadedFileCount === totalFilesToUpload)) {
+        cancelUpload();
+    }
 }
+
 
 // --- 파일 크기 포맷팅 함수 (기존과 동일) ---
 function formatFileSize(bytes) {
@@ -294,23 +299,43 @@ async function startTusUpload(filesWithPaths, targetPath = '') {
 // --- 모든 업로드 완료 시 처리 ---
 function handleAllUploadsComplete() {
     logLog(`모든 TUS 업로드 시도 완료. 성공: ${uploadedFileCount}/${totalFilesToUpload}`);
-    // 약간의 지연 후 모달 숨기기 또는 성공/실패 요약 표시
-    setTimeout(() => {
-        hideUploadModal();
-        // TODO: 성공/실패 요약 메시지 표시 (showToast 등 사용)
-        if (typeof showToast === 'function') {
-             if (uploadedFileCount === totalFilesToUpload) {
-                 showToast(`${totalFilesToUpload}개 파일 업로드 완료`, 'success');
-             } else {
-                 showToast(`파일 업로드 완료 (${uploadedFileCount} 성공, ${totalFilesToUpload - uploadedFileCount} 실패)`, 'warning');
-             }
+    
+    // 완료 상태 설정 (직접 UI 업데이트)
+    if (uploadProgressModal) {
+        if (currentFileInfo) {
+            currentFileInfo.textContent = '모든 파일 업로드 완료';
         }
-         // 파일 목록 새로고침 등 후속 작업
-         if (typeof loadFiles === 'function') {
-             loadFiles(currentPath); // 현재 경로 파일 목록 새로고침
-         }
-    }, 1500); // 1.5초 후
+    }
+    
+    // 약간의 지연 후 모달 숨기기
+    setTimeout(() => {
+        // 모달 직접 숨김 처리 (cancelUpload 호출 방지)
+        if (uploadProgressModal) {
+            uploadProgressModal.style.display = 'none';
+            logLog('업로드 모달 숨김 (완료)');
+        }
+        
+        // 성공/실패 요약 메시지
+        if (typeof showToast === 'function') {
+            if (uploadedFileCount === totalFilesToUpload) {
+                showToast(`${totalFilesToUpload}개 파일 업로드 완료`, 'success');
+            } else {
+                showToast(`파일 업로드 완료 (${uploadedFileCount} 성공, ${totalFilesToUpload - uploadedFileCount} 실패)`, 'warning');
+            }
+        }
+        
+        // 파일 목록 새로고침
+        if (typeof loadFiles === 'function') {
+            loadFiles(currentPath);
+        }
+    }, 1500);
 }
+
+
+
+
+
+
 
 
 // --- 업로드 취소 함수 ---

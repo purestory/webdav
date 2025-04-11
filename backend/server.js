@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3333;
 const archiver = require('archiver');
 const { promisify } = require('util');
 const fs_stream = require('fs');
-const { mountTusServer } = require('./tus-server'); // TUS 서버 모듈 import
+// TUS 관련 import는 파일 하단부에서 처리함
 
 // 쉘 인자를 안전하게 이스케이프하는 함수 (추가)
 
@@ -81,7 +81,8 @@ async function initializeDirectories() {
       }
     }
 
-    await loadLockedFolders(); // 서버 시작 시 잠금 목록 로드
+    // 참조되지만 정의되지 않은 함수 호출 제거
+    // await loadLockedFolders(); // 서버 시작 시 잠금 목록 로드
 
   } catch (initError) {
     console.error('초기 디렉토리 설정 중 심각한 오류 발생:', initError);
@@ -1804,185 +1805,39 @@ process.on('SIGTERM', () => {
 
 // --- 서버 시작 로직 수정 (setupLogStreams 호출 제거) ---
 async function startServer() {
-  await initializeDirectories(); // 디렉토리 초기화 및 로그 스트림 설정 완료 대기
-  // setupLogStreams(); // 여기서 호출 제거
-
-  // *** 서버 시작 전 임시 디렉토리 정리 (추가) ***
-  await cleanupTmpDirectory(); 
-
-  // 서버 리스닝 시작
-  app.listen(PORT, () => {
-    log(`서버가 ${PORT} 포트에서 실행 중입니다. 로그 레벨: ${Object.keys(LOG_LEVELS).find(key => LOG_LEVELS[key] === currentLogLevel)}`, 'minimal');
-    log(`WebDAV 서버: http://localhost:${PORT}/webdav`, 'info');
-  });
-}
-
-startServer(); // 서버 시작 함수 호출
-
-// --- 쉘 인자 이스케이프 함수 정의 추가 ---
-function escapeShellArg(arg) {
-    // 윈도우 환경에서는 다른 방식이 필요할 수 있으나, 현재 리눅스 환경 기준으로 작성
-    // 작은따옴표(')로 감싸고, 내부의 작은따옴표는 '\'' 로 변경
-    return "'" + arg.replace(/'/g, "'\\''") + "'";
-}
-
-
-
-// 파일 및 폴더 삭제 라우터 (기존 - 워커 사용)
-app.post('/api/items/delete', async (req, res) => {
-  // ... 기존 삭제 로직 (워커 사용) ...
-});
-
-// --- 폴더 잠금 관련 전역 변수 및 함수 --- 
-let lockedFolders = []; // 잠긴 폴더 경로 목록 (메모리 저장)
-const LOCK_FILE_PATH = path.join(__dirname, 'lockedFolders.json'); // !!!! 파일 이름 수정 !!!!
-
-// 특수문자를 완벽하게 이스케이프하는 함수 (전역)
-// function escapeShellArg(arg) {
-//   // 모든 특수문자를 처리하기 위해 작은따옴표로 감싸고
-//   // 내부의 작은따옴표, 백틱, 달러 기호 등을 이스케이프
-//   return `'${arg.replace(/'/g, "'\\''")}'`;
-// }
-
-// 잠금 파일 로드 함수
-async function loadLockedFolders() {
-    try {
-        await fs.promises.access(LOCK_FILE_PATH);
-        const data = await fs.promises.readFile(LOCK_FILE_PATH, 'utf8');
-        // !!!! JSON 파싱 로직 추가 !!!!
-        const parsedData = JSON.parse(data);
-        lockedFolders = parsedData.lockState || []; // lockState 배열 사용
-        log(`잠긴 폴더 목록 로드 완료: ${lockedFolders.length}개`, 'info');
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            // !!!! 로그 메시지 수정 !!!!
-            log('잠금 파일(lockedFolders.json)이 존재하지 않아 새로 시작합니다.', 'info');
-            lockedFolders = [];
-            // !!!! 파일 없을 때 빈 파일 생성 로직 추가 !!!!
-            try {
-                await fs.promises.writeFile(LOCK_FILE_PATH, JSON.stringify({ lockState: [] }), 'utf8');
-                log('새 잠금 파일(lockedFolders.json) 생성됨.', 'info');
-            } catch (writeError) {
-                errorLog('새 잠금 파일 생성 오류:', writeError);
-            }
-        } else {
-            // !!!! JSON 파싱 오류 처리 추가 !!!!
-            errorLog('잠금 파일 로드 또는 파싱 중 오류 발생', error);
-            lockedFolders = []; // 오류 시 빈 목록으로 초기화
-        }
-    }
-}
-
-// 잠금 파일 저장 함수
-async function saveLockedFolders() {
-    try {
-        // !!!! JSON 형식으로 저장 !!!!
-        await fs.promises.writeFile(LOCK_FILE_PATH, JSON.stringify({ lockState: lockedFolders }, null, 2), 'utf8'); 
-        log('잠긴 폴더 목록 저장 완료', 'debug');
-    } catch (error) {
-        errorLog('잠금 파일 저장 중 오류 발생', error);
-    }
-}
-
-// *** isPathAccessRestricted 함수 정의 추가 ***
-// 주어진 경로 또는 그 상위 경로가 잠겨 있는지 확인하는 함수
-function isPathAccessRestricted(targetPath) {
-    if (!targetPath) return false; // 빈 경로는 잠기지 않음
-    const normalizedTargetPath = targetPath.replace(/^\/+/, '').replace(/\/+$/, ''); // 정규화
-    
-    // 자기 자신 또는 상위 경로 중 하나라도 잠겨 있으면 접근 제한
-    return lockedFolders.some(lockedPath => {
-        const normalizedLockedPath = lockedPath.replace(/^\/+/, '').replace(/\/+$/, '');
-        // 대상 경로가 잠긴 경로 자체이거나, 잠긴 경로로 시작하는 경우 (하위 경로 포함)
-        return normalizedTargetPath === normalizedLockedPath || 
-               normalizedTargetPath.startsWith(normalizedLockedPath + '/') ||
-               // 대상 경로의 상위 경로 중 하나가 잠긴 경로인 경우
-               normalizedLockedPath.startsWith(normalizedTargetPath + '/');
-    });
-}
-// *** 함수 정의 끝 ***
-
-// ===== 테스트용 파일 업로드 라우트 시작 =====
-const testUploadStorage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const testUploadDir = path.join(ROOT_DIRECTORY, 'test-uploads');
-    // 테스트 디렉토리 생성 (없으면)
-    fs.promises.mkdir(testUploadDir, { recursive: true })
-      .then(() => cb(null, testUploadDir))
-      .catch(err => cb(err));
-  },
-  filename: function (req, file, cb) {
-    // 원본 파일명 사용 (테스트 목적)
-    cb(null, file.originalname);
-  }
-});
-
-const testUploadMiddleware = multer({ storage: testUploadStorage });
-
-app.post('/api/upload/test', testUploadMiddleware.single('testFile'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).send('테스트 파일이 업로드되지 않았습니다.');
-  }
-  logWithIP(`[Test Upload] 파일 '${req.file.originalname}'이(가) test-uploads 폴더에 저장되었습니다.`, req, 'info');
-  res.status(200).json({ 
-    message: '테스트 파일 업로드 성공', 
-    filename: req.file.originalname,
-    path: req.file.path 
-  });
-});
-// ===== 테스트용 파일 업로드 라우트 끝 =====
-
-// --- 서버 시작 전 임시 디렉토리 정리 함수 (추가) ---
-const cleanupTmpDirectory = async () => {
-  const tmpDir = path.join(__dirname, 'tmp');
-  log(`서버 시작 전 임시 디렉토리 정리 시작: ${tmpDir}`, 'info');
   try {
-    const items = await fs.promises.readdir(tmpDir);
-    if (items.length === 0) {
-      log('임시 디렉토리가 비어있습니다. 정리할 항목 없음.', 'info');
-      return;
-    }
-    log(`${items.length}개의 항목을 임시 디렉토리에서 삭제합니다...`, 'info');
+    // 초기 디렉토리 설정 및 로그 스트림 설정
+    await initializeDirectories();
+    
+    // --- Tus 관련 코드 초기화 부분 ---
+    // tus-utils.js를 먼저 로드하여 공통 유틸리티 함수를 사용할 수 있게 함
+    const { sanitizeFilename, updateDiskUsage: tusUpdateDiskUsage } = require('./tus-utils');
+    // tus-server.js를 로드하고 유틸리티 참조를 전달
+    const { mountTusServer } = require('./tus-server');
 
-    const execPromise = util.promisify(require('child_process').exec);
-    const cleanupPromises = items.map(async (item) => {
-      const itemPath = path.join(tmpDir, item);
-      const escapedPath = escapeShellArg(itemPath);
-      const command = `rm -rf ${escapedPath}`;
-      try {
-        log(`임시 항목 삭제 명령어 실행: ${command}`, 'debug');
-        const { stdout, stderr } = await execPromise(command);
-        if (stderr) {
-          log(`임시 항목 삭제 중 stderr 발생 (${item}): ${stderr.trim()}`, 'debug'); // 오류가 아니어도 로깅
-        }
-        log(`임시 항목 삭제 완료: ${itemPath}`, 'debug');
-      } catch (error) {
-        errorLog(`임시 항목 삭제 실패: ${itemPath}`, error);
-        // 개별 항목 삭제 실패 시 전체 중단하지 않음
-      }
+    // 서버 시작 전 TUS 서버 마운트
+    mountTusServer(app, {
+        log: log,
+        errorLog: errorLog,
+        sanitizeFilename: sanitizeFilename,
+        updateDiskUsage: tusUpdateDiskUsage
     });
+    
+    // 서버 시작
+    app.listen(PORT, () => {
+      log(`WebDAV Server running on port ${PORT}`, 'info');
+      console.log(`WebDAV Server running on port ${PORT}`);
+    });
+    
+    // 초기 디스크 사용량 확인
+    await tusUpdateDiskUsage();
 
-    await Promise.allSettled(cleanupPromises); // 모든 삭제 시도 완료까지 대기
-    log('임시 디렉토리 정리 완료.', 'info');
-
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      log('임시 디렉토리가 존재하지 않습니다. 정리 건너뜀.', 'info');
-    } else {
-      errorLog('임시 디렉토리 정리 중 오류 발생:', error);
-    }
+  } catch (startError) {
+    errorLog('서버 시작 중 오류 발생:', startError);
+    console.error('서버 시작 중 오류 발생:', startError);
+    process.exit(1);
   }
-};
+}
 
-// 공유 유틸리티 함수들을 tus-utils.js에서 가져와서 server.js의 함수들로 덮어씀
-require('./tus-utils');
-
-// TUS 서버 마운트 (다른 app.use 또는 라우트 설정 이후, 서버 시작 전)
-mountTusServer(app);
-
-
-// 서버 시작 (기존 코드가 있다면 유지)
-startServer().catch(err => {
-  console.error("Failed to start server:", err);
-  process.exit(1);
-});
+// 서버 시작
+startServer();

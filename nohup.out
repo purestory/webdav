@@ -1,0 +1,36 @@
+[INFO] TUS storage directory ensured: /home/purestory/webdav/backend/tus-storage
+[INFO] TUS server mounted at /api/tus/upload/
+[INFO] TUS storage directory ensured: /home/purestory/webdav/backend/tus-storage
+[INFO] TUS server mounted at /api/tus/upload/
+[INFO] TUS storage directory ensured: /home/purestory/webdav/backend/tus-storage
+[INFO] TUS server mounted at /api/tus/upload/
+[TUS] TUS storage directory already exists: /home/purestory/webdav/backend/tus-storage
+[INFO] [TUS] TUS storage directory already exists: /home/purestory/webdav/backend/tus-storage
+[TUS] TUS storage directory already exists: /home/purestory/webdav/backend/tus-storage
+[INFO] [TUS] TUS storage directory already exists: /home/purestory/webdav/backend/tus-storage
+[TUS] TUS server mounted at /api/tus/upload/
+[INFO] [TUS] TUS server mounted at /api/tus/upload/
+[TUS] TUS request received: POST /api/tus/upload/
+[DEBUG] [TUS] TUS request received: POST /api/tus/upload/
+[TUS] TUS request received: PATCH /api/tus/upload/1744371091980
+[DEBUG] [TUS] TUS request received: PATCH /api/tus/upload/1744371091980
+[TUS] TUS request received: POST /api/tus/upload/
+[DEBUG] [TUS] TUS request received: POST /api/tus/upload/
+[TUS] TUS request received: PATCH /api/tus/upload/1744371104075
+[DEBUG] [TUS] TUS request received: PATCH /api/tus/upload/1744371104075
+/home/purestory/webdav/backend/server.js:1981
+const { mountTusServer } = require('./tus-server');
+        ^
+
+SyntaxError: Identifier 'mountTusServer' has already been declared
+    at wrapSafe (node:internal/modules/cjs/loader:1486:18)
+    at Module._compile (node:internal/modules/cjs/loader:1528:20)
+    at Object..js (node:internal/modules/cjs/loader:1706:10)
+    at Module.load (node:internal/modules/cjs/loader:1289:32)
+    at Function._load (node:internal/modules/cjs/loader:1108:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:220:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+
+Node.js v22.14.0
