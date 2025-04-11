@@ -78,6 +78,39 @@ async function fileExists(filePath) {
     }
 }
 
+// 현재 처리 중인 파일을 추적하기 위한 Map
+const processingFiles = new Map();
+
+// --- TUS 핸들러 함수 (외부 이벤트 루프에서 안전하게 호출 가능) ---
+function handleCompletedUpload(file) {
+    if (!file || !file.id) {
+        tusErrorLog('Invalid file object received in handleCompletedUpload', null);
+        return;
+    }
+
+    // 이미 처리 중인 파일인지 확인
+    if (processingFiles.has(file.id)) {
+        tusLog(`File ${file.id} is already being processed, skipping`, 'warn');
+        return;
+    }
+
+    // 처리 중인 파일로 표시
+    processingFiles.set(file.id, true);
+
+    // 비동기 처리 시작
+    setTimeout(async () => {
+        try {
+            tusLog(`Started processing file ID: ${file.id}`, 'info');
+            await processTusFile(file);
+        } catch (error) {
+            tusErrorLog(`Error in handleCompletedUpload for file ${file.id}`, error);
+        } finally {
+            // 처리 완료 후 Map에서 제거
+            processingFiles.delete(file.id);
+        }
+    }, 100);
+}
+
 // --- 파일 처리 함수 (공통화) ---
 async function processTusFile(file) {
     try {
@@ -85,6 +118,8 @@ async function processTusFile(file) {
         
         // 1. 메타데이터 추출 및 검증
         const metadata = file.metadata || {};
+        tusLog(`File metadata: ${JSON.stringify(metadata)}`, 'debug');
+        
         if (!metadata.filename) {
             tusErrorLog(`Missing filename in metadata for file ID: ${file.id}`, null);
             return false;
@@ -116,6 +151,18 @@ async function processTusFile(file) {
         tusLog(`Final directory: ${finalDirPath}`, 'info');
         tusLog(`Final file path: ${finalFilePath}`, 'info');
 
+        // 임시 파일 경로 확인
+        const sourcePath = path.join(tusStorageDir, file.id);
+        if (!fsSync.existsSync(sourcePath)) {
+            tusErrorLog(`Source file not found: ${sourcePath}`, null);
+            return false;
+        } else {
+            tusLog(`Source file exists: ${sourcePath}`, 'debug');
+            // 파일 크기 로깅
+            const stats = fsSync.statSync(sourcePath);
+            tusLog(`Source file size: ${stats.size} bytes`, 'debug');
+        }
+
         // 3. 대상 디렉토리 생성
         try {
             if (!fsSync.existsSync(finalDirPath)) {
@@ -128,7 +175,6 @@ async function processTusFile(file) {
         }
 
         // 4. 파일 이동
-        const sourcePath = path.join(tusStorageDir, file.id);
         try {
             // 파일 존재 여부 확인
             const fileAlreadyExists = fsSync.existsSync(finalFilePath);
@@ -199,9 +245,14 @@ function initTusServer() {
         });
         
         // 이벤트 리스너 등록
-        tusServer.on(EVENTS.EVENT_UPLOAD_COMPLETE, async (event) => {
+        tusServer.on(EVENTS.EVENT_UPLOAD_COMPLETE, (event) => {
             tusLog(`EVENT_UPLOAD_COMPLETE received for file: ${event.file.id}`, 'info');
-            await processTusFile(event.file);
+            handleCompletedUpload(event.file);  // 비동기 핸들러로 처리
+        });
+        
+        // 추가 진단용 이벤트 리스너
+        tusServer.on(EVENTS.EVENT_FILE_CREATED, (event) => {
+            tusLog(`EVENT_FILE_CREATED for file: ${event.file.id}`, 'debug');
         });
         
         tusLog('TUS server initialized successfully', 'info');
@@ -244,11 +295,83 @@ function mountTusServer(app, utils = {}) {
         tusLog('About to mount TUS server...', 'info');
         console.log('[TUS-MOUNT] Mounting TUS server to Express app');
         
-        // 라우트 등록
+        // 라우트 등록 (handle.bind 방식 대신 직접 처리)
         app.all(`${tusApiPath}*`, (req, res, next) => {
             tusLog(`Request: ${req.method} ${req.url}`, 'debug');
-            return tusServer.handle.bind(tusServer)(req, res, next);
+            
+            // POST 요청 (파일 생성)
+            if (req.method === 'POST' && req.url === tusApiPath) {
+                tusLog(`POST 요청 감지: 파일 생성 시작`, 'debug');
+            }
+            
+            // PATCH 요청 (데이터 업로드)
+            if (req.method === 'PATCH' && req.url.startsWith(tusApiPath)) {
+                const fileId = req.url.replace(tusApiPath, '');
+                tusLog(`PATCH 요청 감지: 파일 ID ${fileId} 데이터 업로드`, 'debug');
+                
+                // 원본 요청 처리 후 완료 이벤트 추가 확인
+                res.on('finish', () => {
+                    if (res.statusCode === 204) { // 업로드 성공 상태 코드
+                        // 메타데이터 파일 확인
+                        const metaPath = path.join(tusStorageDir, `${fileId}.json`);
+                        if (fsSync.existsSync(metaPath)) {
+                            try {
+                                const metaContent = fsSync.readFileSync(metaPath, 'utf8');
+                                const meta = JSON.parse(metaContent);
+                                
+                                // 파일 크기 확인 (완료 여부 판단)
+                                const dataPath = path.join(tusStorageDir, fileId);
+                                if (fsSync.existsSync(dataPath)) {
+                                    const dataStats = fsSync.statSync(dataPath);
+                                    // 헤더에서 업로드 크기 확인
+                                    if (req.headers['upload-length'] && 
+                                        dataStats.size.toString() === req.headers['upload-length']) {
+                                        tusLog(`PATCH 요청 완료: 파일 ID ${fileId} 업로드 완료됨`, 'info');
+                                        
+                                        // 파일 처리 트리거
+                                        handleCompletedUpload({ 
+                                            id: fileId, 
+                                            metadata: meta.metadata || {} 
+                                        });
+                                    }
+                                }
+                            } catch (e) {
+                                tusErrorLog(`메타데이터 파일 처리 오류: ${e.message}`, e);
+                            }
+                        }
+                    }
+                });
+            }
+            
+            // TUS 서버에 요청 전달
+            return tusServer.handle(req, res, next);
         });
+        
+        // 기존 파일 처리 (서버 재시작 시)
+        setTimeout(async () => {
+            try {
+                const files = fsSync.readdirSync(tusStorageDir);
+                const jsonFiles = files.filter(file => file.endsWith('.json'));
+                tusLog(`Found ${jsonFiles.length} incomplete uploads to process`, 'info');
+                
+                for (const jsonFile of jsonFiles) {
+                    const fileId = path.basename(jsonFile, '.json');
+                    const filePath = path.join(tusStorageDir, fileId);
+                    
+                    if (fsSync.existsSync(filePath)) {
+                        try {
+                            const metadataStr = await fs.readFile(path.join(tusStorageDir, jsonFile), 'utf8');
+                            const metadata = JSON.parse(metadataStr);
+                            handleCompletedUpload({ id: fileId, metadata: metadata.metadata || {} });
+                        } catch (e) {
+                            tusErrorLog(`Error processing existing file ${fileId}`, e);
+                        }
+                    }
+                }
+            } catch (e) {
+                tusErrorLog('Error processing existing files', e);
+            }
+        }, 2000);
         
         tusLog(`TUS server mounted at ${tusApiPath}`, 'info');
         console.log(`[TUS-MOUNT] TUS server successfully mounted at ${tusApiPath}`);
